@@ -1,0 +1,18 @@
+[
+    {
+        "name": "Camera1",
+        "url": "rtsp://user:password@camera_ip:554/Streaming/Channels/102",
+        "comment": "Feed 1"
+    },
+    {
+        "name": "Camera2",
+        "url": "rtsp://user:password@camera_ip:554/Streaming/Channels/102",
+        "comment": "Feed 2"
+    },
+    {
+        "name": "Camera3",
+        "url": "rtsp://user:password@camera_ip:554/Streaming/Channels/102",
+        "comment": "Feed 3"
+    }
+]
+

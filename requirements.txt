@@ -1,0 +1,6 @@
+pygame
+luma.lcd
+luma.core
+Pillow
+opencv-python
+evdev
