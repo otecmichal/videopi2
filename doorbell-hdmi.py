@@ -8,14 +8,20 @@ import numpy as np  # Required for high-performance drawing
 import pygame
 from evdev import InputDevice, list_devices, ecodes
 
+# --- RTSP OPTIMIZATION ---
+# Set these BEFORE importing cv2 if possible, but definitely before VideoCapture
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
 # --- HARDWARE CONFIG ---
-FB_DEVICE = "/dev/fb0"  # Changed to HDMI framebuffer device
-os.putenv("SDL_FBDEV", FB_DEVICE)
+FB_DEVICE = "/dev/fb0"
+os.environ["SDL_FBDEV"] = FB_DEVICE
+# For modern Pi OS, sometimes kmsdrm is needed, but we follow test.py
+# os.environ["SDL_VIDEODRIVER"] = "fbcon"
+
 CONFIG_FILE = "feeds.json"
 AUTO_CYCLE_SECONDS = 1800
-TARGET_FPS = 12  # Reducing FPS is the best way to save CPU on Pi Zero 2W
+TARGET_FPS = 12
 FRAME_TIME = 1.0 / TARGET_FPS
-
 
 # --- CALIBRATION ---
 X_RAW_MIN, X_RAW_MAX = 300, 3900
@@ -35,13 +41,19 @@ class RTSPViewer:
 
         self.screen = pygame.display.set_mode((self.w, self.h), pygame.FULLSCREEN)
 
+        # Immediate visual feedback (like test.py)
+        self.screen.fill((0, 0, 255))  # Blue screen
+        font = pygame.font.SysFont(None, 48)
+        img = font.render("Loading Cameras...", True, (255, 255, 255))
+        self.screen.blit(img, (self.w // 2 - 150, self.h // 2))
+        pygame.display.flip()
+        print("Splash screen displayed")
+
         print(f"Loading camera config from {CONFIG_FILE}...")
         with open(CONFIG_FILE, "r") as f:
             self.cameras = json.load(f)
 
-        print(
-            f"Loaded {len(self.cameras)} cameras: {[cam['name'] for cam in self.cameras]}"
-        )
+        print(f"Loaded {len(self.cameras)} cameras")
         self.current_idx = 0
         self.frame = None
         self.running = True
@@ -51,17 +63,22 @@ class RTSPViewer:
 
     def find_touch_device(self):
         print("Scanning for touch devices...")
-        devices = [InputDevice(path) for path in list_devices()]
-        print(f"Found {len(devices)} input devices: {[dev.name for dev in devices]}")
+        devices = []
+        try:
+            devices = [InputDevice(path) for path in list_devices()]
+        except:
+            print("Error scanning input devices")
+
+        print(f"Found {len(devices)} input devices")
         for dev in devices:
             if (
-                "ADS7846" in dev.name
+                "WaveShare" in dev.name
+                or "ADS7846" in dev.name
                 or "Touchscreen" in dev.name
                 or "waveshare" in dev.name.lower()
             ):
                 print(f"Using touch device: {dev.name} at {dev.path}")
                 return dev.path
-        print("No touch device found")
         return None
 
     def map_coordinates(self, rx, ry):
@@ -76,20 +93,19 @@ class RTSPViewer:
             return 0, 0
 
     def video_worker(self):
-        """Ultra-optimized worker using OpenCV native drawing."""
         print("Starting video worker thread...")
-        # Use TCP to prevent 'overread' errors and stabilize stream
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
         while self.running:
             cam = self.cameras[self.current_idx]
             print(f"Connecting to camera: {cam['name']} at {cam['url']}")
+
+            # Add a timeout to VideoCapture if possible (not directly supported, but we can try)
             cap = cv2.VideoCapture(cam["url"], cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer for low latency
 
             if not cap.isOpened():
                 print(f"Failed to open camera: {cam['name']}")
-                time.sleep(2)
+                time.sleep(5)
                 continue
 
             print(f"Streaming: {cam['name']}")
@@ -102,53 +118,32 @@ class RTSPViewer:
                     break
 
                 frame_count += 1
-                if frame_count % 100 == 0:  # Log every 100 frames
-                    print(f"Processed {frame_count} frames from {cam['name']}")
+                if frame_count % 50 == 0:
+                    print(f"Frames received: {frame_count}")
 
-                # 1. Faster Resize (INTER_NEAREST is much lighter than default)
+                # Resize and draw UI
                 img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
 
-                # 2. Draw UI using OpenCV (BGR Colors)
-                # Left Arrow
-                pts_l = np.array(
-                    [[10, self.h // 2], [30, self.h // 2 - 20], [30, self.h // 2 + 20]],
-                    np.int32,
-                )
-                cv2.fillPoly(img, [pts_l], (255, 255, 255))
-
-                # Right Arrow
-                pts_r = np.array(
-                    [
-                        [self.w - 10, self.h // 2],
-                        [self.w - 30, self.h // 2 - 20],
-                        [self.w - 30, self.h // 2 + 20],
-                    ],
-                    np.int32,
-                )
-                cv2.fillPoly(img, [pts_r], (255, 255, 255))
-
-                # Top Label (Black box + Text)
-                # cv2.rectangle(img, (self.w//2 - 60, 5), (self.w//2 + 60, 30), (0, 0, 0), -1)
+                # UI overlays
                 cv2.putText(
                     img,
                     cam["name"],
-                    (self.w // 2 - 45, 22),
+                    (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 255),
                     1,
-                    cv2.LINE_AA,
+                    (0, 255, 255),
+                    2,
                 )
 
-                # 3. Final conversion to RGB and pygame Surface (Only once per frame)
+                # Convert to pygame Surface
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 self.frame = pygame.image.frombuffer(
                     img_rgb.tobytes(), (self.w, self.h), "RGB"
                 )
 
-            print(f"Releasing camera: {cam['name']}")
             cap.release()
-            time.sleep(0.5)
+            print(f"Released camera: {cam['name']}")
+            time.sleep(1)
 
     def touch_worker(self):
         dev_path = self.find_touch_device()
