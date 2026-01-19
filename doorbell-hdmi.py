@@ -124,16 +124,45 @@ class RTSPViewer:
                 # Resize and draw UI
                 img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
 
-                # UI overlays
+                # --- UI OVERLAYS ---
+                # 1. Centered Camera Name
+                text = cam["name"]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.0
+                thickness = 2
+                text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                text_x = (self.w - text_size[0]) // 2
+                # Drop shadow for readability
                 cv2.putText(
-                    img,
-                    cam["name"],
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 255, 255),
-                    2,
+                    img, text, (text_x + 2, 42), font, font_scale, (0, 0, 0), thickness
                 )
+                cv2.putText(
+                    img, text, (text_x, 40), font, font_scale, (0, 255, 255), thickness
+                )
+
+                # 2. Navigation Triangles
+                if len(self.cameras) > 1:
+                    tri_color = (200, 200, 200)  # Light grey
+                    # Left triangle
+                    pts_left = np.array(
+                        [
+                            [10, self.h // 2],
+                            [50, self.h // 2 - 30],
+                            [50, self.h // 2 + 30],
+                        ],
+                        np.int32,
+                    )
+                    cv2.fillPoly(img, [pts_left], tri_color)
+                    # Right triangle
+                    pts_right = np.array(
+                        [
+                            [self.w - 10, self.h // 2],
+                            [self.w - 50, self.h // 2 - 30],
+                            [self.w - 50, self.h // 2 + 30],
+                        ],
+                        np.int32,
+                    )
+                    cv2.fillPoly(img, [pts_right], tri_color)
 
                 # Convert to pygame Surface
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
