@@ -3,18 +3,28 @@ import pygame
 import time
 import sys
 
-# Force SDL to use the framebuffer device
-os.environ["SDL_VIDEODRIVER"] = "fbcon"
-os.environ["SDL_FBDEV"] = "/dev/fb0"
+# Attempt to use kmsdrm (modern Pi OS standard) or let SDL2 choose
+# We no longer force "fbcon" as it is often unavailable in newer SDL2 builds
+if "SDL_VIDEODRIVER" not in os.environ:
+    os.environ["SDL_VIDEODRIVER"] = "kmsdrm"
+# os.environ["SDL_FBDEV"] = "/dev/fb0" # kmsdrm usually handles the device automatically
 
 
 def test_display():
     print("Initializing Pygame...")
+    # Initialize only video to avoid ALSA/Audio errors if not needed
     try:
-        pygame.init()
+        pygame.display.init()
     except Exception as e:
-        print(f"Error initializing Pygame: {e}")
-        return
+        print(f"Error initializing Pygame video: {e}")
+        print("Retrying without forcing SDL_VIDEODRIVER...")
+        if "SDL_VIDEODRIVER" in os.environ:
+            del os.environ["SDL_VIDEODRIVER"]
+        try:
+            pygame.display.init()
+        except Exception as e2:
+            print(f"Final video init failed: {e2}")
+            return
 
     # Display dimensions
     width, height = 1024, 600
