@@ -4,7 +4,6 @@ import time
 import threading
 import os
 import sys
-import numpy as np  # Required for high-performance drawing
 import pygame
 from evdev import InputDevice, list_devices, ecodes
 
@@ -59,7 +58,54 @@ class RTSPViewer:
         self.running = True
         self.btn_width = 80
         self.last_interaction_time = time.time()
+
+        # --- OPTIMIZATION: Pre-render UI ---
+        self.ui_font = pygame.font.SysFont(None, 40)
+        self.camera_surfaces = {}  # Cache for camera name surfaces
+        self.last_rendered_idx = -1
+        self.nav_surfaces = self._create_nav_surfaces()
+
         print("RTSP Viewer initialized successfully")
+
+    def _create_nav_surfaces(self):
+        """Pre-render navigation triangles as pygame surfaces."""
+        surfaces = {}
+        if len(self.cameras) <= 1:
+            return surfaces
+
+        tri_color = (200, 200, 200)
+        size = 60
+        # Left triangle
+        left_surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.polygon(
+            left_surf, tri_color, [(0, size // 2), (size, 0), (size, size)]
+        )
+        surfaces["left"] = (left_surf, (10, self.h // 2 - size // 2))
+
+        # Right triangle
+        right_surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.polygon(
+            right_surf, tri_color, [(size, size // 2), (0, 0), (0, size)]
+        )
+        surfaces["right"] = (right_surf, (self.w - size - 10, self.h // 2 - size // 2))
+        return surfaces
+
+    def _get_camera_name_surface(self, name):
+        """Get or create a cached surface for the camera name."""
+        if name not in self.camera_surfaces:
+            # Render with drop shadow
+            shadow = self.ui_font.render(name, True, (0, 0, 0))
+            text = self.ui_font.render(name, True, (0, 255, 255))
+
+            surf = pygame.Surface(
+                (text.get_width() + 2, text.get_height() + 2), pygame.SRCALPHA
+            )
+            surf.blit(shadow, (2, 2))
+            surf.blit(text, (0, 0))
+
+            x = (self.w - surf.get_width()) // 2
+            self.camera_surfaces[name] = (surf, (x, 20))
+        return self.camera_surfaces[name]
 
     def find_touch_device(self):
         print("Scanning for touch devices...")
@@ -112,63 +158,34 @@ class RTSPViewer:
             frame_count = 0
 
             while self.running and self.cameras[self.current_idx] == cam:
+                # Throttle read slightly if we are way ahead of TARGET_FPS
+                # cap.read() blocks on network, but we can still consume too much CPU
                 ret, img = cap.read()
                 if not ret:
                     print(f"Lost connection to {cam['name']}, reconnecting...")
                     break
 
                 frame_count += 1
-                if frame_count % 50 == 0:
-                    print(f"Frames received: {frame_count}")
+                if frame_count % 100 == 0:
+                    print(f"Frames received from {cam['name']}: {frame_count}")
 
-                # Resize and draw UI
+                # Performance optimization: only process if main thread is ready
+                # (Simple way: just resize and convert as usual, but more efficiently)
+
+                # Resize using NEAREST is fast, but still takes CPU
                 img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
 
-                # --- UI OVERLAYS ---
-                # 1. Centered Camera Name
-                text = cam["name"]
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 1.0
-                thickness = 2
-                text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                text_x = (self.w - text_size[0]) // 2
-                # Drop shadow for readability
-                cv2.putText(
-                    img, text, (text_x + 2, 42), font, font_scale, (0, 0, 0), thickness
-                )
-                cv2.putText(
-                    img, text, (text_x, 40), font, font_scale, (0, 255, 255), thickness
-                )
-
-                # 2. Navigation Triangles
-                if len(self.cameras) > 1:
-                    tri_color = (200, 200, 200)  # Light grey
-                    # Left triangle
-                    pts_left = np.array(
-                        [
-                            [10, self.h // 2],
-                            [50, self.h // 2 - 30],
-                            [50, self.h // 2 + 30],
-                        ],
-                        np.int32,
-                    )
-                    cv2.fillPoly(img, [pts_left], tri_color)
-                    # Right triangle
-                    pts_right = np.array(
-                        [
-                            [self.w - 10, self.h // 2],
-                            [self.w - 50, self.h // 2 - 30],
-                            [self.w - 50, self.h // 2 + 30],
-                        ],
-                        np.int32,
-                    )
-                    cv2.fillPoly(img, [pts_right], tri_color)
-
-                # Convert to pygame Surface
+                # Convert to pygame Surface efficiently
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                # Optimization: pygame.image.frombuffer is good,
+                # but we can also use pygame.image.frombuffer(..., "RGB")
                 self.frame = pygame.image.frombuffer(
                     img_rgb.tobytes(), (self.w, self.h), "RGB"
                 )
+
+                # Small sleep to yield to other threads
+                time.sleep(0.01)
 
             cap.release()
             print(f"Released camera: {cam['name']}")
@@ -217,6 +234,17 @@ class RTSPViewer:
 
                 if self.frame:
                     self.screen.blit(self.frame, (0, 0))
+
+                    # --- OPTIMIZED UI BLIT ---
+                    # 1. Draw Name
+                    cam_name = self.cameras[self.current_idx]["name"]
+                    name_surf, name_pos = self._get_camera_name_surface(cam_name)
+                    self.screen.blit(name_surf, name_pos)
+
+                    # 2. Draw Nav
+                    for surf, pos in self.nav_surfaces.values():
+                        self.screen.blit(surf, pos)
+
                     pygame.display.flip()
 
                 # FPS Governor: sleep just enough to maintain TARGET_FPS
