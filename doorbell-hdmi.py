@@ -26,24 +26,32 @@ Y_RAW_MIN, Y_RAW_MAX = 300, 3950
 
 class RTSPViewer:
     def __init__(self):
+        print("Initializing RTSP Viewer...")
         self.device = linux_framebuffer(FB_DEVICE)
         # Force display dimensions for HDMI display
         self.w, self.h = DISPLAY_WIDTH, DISPLAY_HEIGHT
         
+        print(f"Loading camera config from {CONFIG_FILE}...")
         with open(CONFIG_FILE, 'r') as f:
             self.cameras = json.load(f)
         
+        print(f"Loaded {len(self.cameras)} cameras: {[cam['name'] for cam in self.cameras]}")
         self.current_idx = 0
         self.frame = None
         self.running = True
         self.btn_width = 80 
         self.last_interaction_time = time.time()
+        print("RTSP Viewer initialized successfully")
 
     def find_touch_device(self):
+        print("Scanning for touch devices...")
         devices = [InputDevice(path) for path in list_devices()]
+        print(f"Found {len(devices)} input devices: {[dev.name for dev in devices]}")
         for dev in devices:
             if "ADS7846" in dev.name or "Touchscreen" in dev.name or "waveshare" in dev.name.lower():
+                print(f"Using touch device: {dev.name} at {dev.path}")
                 return dev.path
+        print("No touch device found")
         return None
 
     def map_coordinates(self, rx, ry):
@@ -59,19 +67,33 @@ class RTSPViewer:
 
     def video_worker(self):
         """Ultra-optimized worker using OpenCV native drawing."""
+        print("Starting video worker thread...")
         # Use TCP to prevent 'overread' errors and stabilize stream
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
         
         while self.running:
             cam = self.cameras[self.current_idx]
+            print(f"Connecting to camera: {cam['name']} at {cam['url']}")
             cap = cv2.VideoCapture(cam['url'], cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
             
+            if not cap.isOpened():
+                print(f"Failed to open camera: {cam['name']}")
+                time.sleep(2)
+                continue
+                
             print(f"Streaming: {cam['name']}")
+            frame_count = 0
             
             while self.running and self.cameras[self.current_idx] == cam:
                 ret, img = cap.read()
-                if not ret: break
+                if not ret: 
+                    print(f"Lost connection to {cam['name']}, reconnecting...")
+                    break
+                
+                frame_count += 1
+                if frame_count % 100 == 0:  # Log every 100 frames
+                    print(f"Processed {frame_count} frames from {cam['name']}")
                 
                 # 1. Faster Resize (INTER_NEAREST is much lighter than default)
                 img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
@@ -94,6 +116,7 @@ class RTSPViewer:
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 self.frame = Image.fromarray(img_rgb)
                 
+            print(f"Releasing camera: {cam['name']}")
             cap.release()
             time.sleep(0.5)
 
