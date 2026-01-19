@@ -4,6 +4,7 @@ import time
 import threading
 import os
 import sys
+import numpy as np
 import pygame
 from evdev import InputDevice, list_devices, ecodes
 
@@ -155,37 +156,34 @@ class RTSPViewer:
                 continue
 
             print(f"Streaming: {cam['name']}")
-            frame_count = 0
 
             while self.running and self.cameras[self.current_idx] == cam:
-                # Throttle read slightly if we are way ahead of TARGET_FPS
-                # cap.read() blocks on network, but we can still consume too much CPU
-                ret, img = cap.read()
-                if not ret:
+                # 1. Grab the frame (cheap)
+                if not cap.grab():
                     print(f"Lost connection to {cam['name']}, reconnecting...")
                     break
 
-                frame_count += 1
-                if frame_count % 100 == 0:
-                    print(f"Frames received from {cam['name']}: {frame_count}")
+                # 2. Only decode and process if the main thread is ready
+                if self.frame is not None:
+                    time.sleep(0.005)  # Tiny sleep to yield
+                    continue
 
-                # Performance optimization: only process if main thread is ready
-                # (Simple way: just resize and convert as usual, but more efficiently)
+                # 3. Retrieve/Decode (expensive)
+                ret, img = cap.retrieve()
+                if not ret:
+                    break
 
-                # Resize using NEAREST is fast, but still takes CPU
-                img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
-
-                # Convert to pygame Surface efficiently
+                # 4. Color convert SMALL frame (much faster)
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-                # Optimization: pygame.image.frombuffer is good,
-                # but we can also use pygame.image.frombuffer(..., "RGB")
-                self.frame = pygame.image.frombuffer(
-                    img_rgb.tobytes(), (self.w, self.h), "RGB"
-                )
+                # 5. Resize SMALL RGB to screen size (only if needed)
+                if (img_rgb.shape[1], img_rgb.shape[0]) != (self.w, self.h):
+                    img_rgb = cv2.resize(
+                        img_rgb, (self.w, self.h), interpolation=cv2.INTER_NEAREST
+                    )
 
-                # Small sleep to yield to other threads
-                time.sleep(0.01)
+                # 6. Create surface from buffer without copying
+                self.frame = pygame.image.frombuffer(img_rgb, (self.w, self.h), "RGB")
 
             cap.release()
             print(f"Released camera: {cam['name']}")
@@ -234,6 +232,7 @@ class RTSPViewer:
 
                 if self.frame:
                     self.screen.blit(self.frame, (0, 0))
+                    self.frame = None  # Signal ready for next frame
 
                     # --- OPTIMIZED UI BLIT ---
                     # 1. Draw Name
