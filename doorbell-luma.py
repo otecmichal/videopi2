@@ -64,8 +64,14 @@ class RTSPViewer:
         except:
             self.font = ImageFont.load_default()
 
-        self.ui_mask = None
         self.ui_overlay = None
+        self.ui_regions = []  # List of (y1, y2, x1, x2, overlay_rgb, mask)
+
+        # Pre-allocate output buffer to avoid per-frame allocation
+        self.out_buffer = np.zeros(
+            (self.h, self.w, 4 if self.bpp == 32 else 3), dtype=np.uint8
+        )
+
         self._update_ui_assets()
 
         print("RTSP Viewer initialized successfully")
@@ -86,47 +92,76 @@ class RTSPViewer:
             return 32
 
     def _update_ui_assets(self):
-        """Pre-render UI to NumPy arrays for fast blending."""
+        """Pre-render UI elements and identify their regions for fast blitting."""
         cam_name = self.cameras[self.current_idx]["name"]
+        self.ui_regions = []
 
-        # Create a RGBA PIL image for the UI
-        pil_ui = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(pil_ui)
+        def add_region(text, font, color, pos_func):
+            # Temporary image to get dimensions
+            temp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            try:
+                bbox = temp_draw.textbbox((0, 0), text, font=font)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                tw, th = temp_draw.textsize(text, font=font)
 
-        # 1. Camera Name
-        try:
-            bbox = draw.textbbox((0, 0), cam_name, font=self.font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-        except AttributeError:
-            tw, th = draw.textsize(cam_name, font=self.font)
+            x, y = pos_func(tw, th)
+            # Create the actual region
+            img = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            # Shadow
+            draw.text((2, 2), text, font=font, fill=(0, 0, 0, 255))
+            # Main text
+            draw.text((0, 0), text, font=font, fill=color)
 
-        tx = (self.w - tw) // 2
-        draw.text((tx + 2, 22), cam_name, font=self.font, fill=(0, 0, 0, 255))
-        draw.text((tx, 20), cam_name, font=self.font, fill=(255, 255, 0, 255))
+            arr = np.array(img)
+            self.ui_regions.append(
+                {
+                    "y1": y,
+                    "y2": y + arr.shape[0],
+                    "x1": x,
+                    "x2": x + arr.shape[1],
+                    "rgb": arr[:, :, :3],
+                    "mask": arr[:, :, 3:4] / 255.0,
+                }
+            )
+
+        # 1. Camera Name (Centered)
+        add_region(
+            cam_name,
+            self.font,
+            (255, 255, 0, 255),
+            lambda tw, th: ((self.w - tw) // 2, 20),
+        )
 
         # 2. Navigation Triangles
         if len(self.cameras) > 1:
-            tri_color = (200, 200, 200, 180)
             size = 40
             mid_y = self.h // 2
-            draw.polygon(
-                [(10, mid_y), (10 + size, mid_y - size), (10 + size, mid_y + size)],
-                fill=tri_color,
-            )
-            draw.polygon(
-                [
-                    (self.w - 10, mid_y),
-                    (self.w - 10 - size, mid_y - size),
-                    (self.w - 10 - size, mid_y + size),
-                ],
-                fill=tri_color,
-            )
 
-        # Convert to NumPy
-        ui_array = np.array(pil_ui)
-        self.ui_overlay = ui_array[:, :, :3]  # RGB
-        self.ui_mask = ui_array[:, :, 3:4] / 255.0  # Alpha channel [0.0, 1.0]
+            for side in ["left", "right"]:
+                img = Image.new("RGBA", (size + 4, size * 2 + 4), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                pts = (
+                    [(0, size), (size, 0), (size, size * 2)]
+                    if side == "left"
+                    else [(size, size), (0, 0), (0, size * 2)]
+                )
+                draw.polygon(pts, fill=(200, 200, 200, 180))
+
+                arr = np.array(img)
+                x = 10 if side == "left" else self.w - size - 10
+                y = mid_y - size
+                self.ui_regions.append(
+                    {
+                        "y1": y,
+                        "y2": y + arr.shape[0],
+                        "x1": x,
+                        "x2": x + arr.shape[1],
+                        "rgb": arr[:, :, :3],
+                        "mask": arr[:, :, 3:4] / 255.0,
+                    }
+                )
 
     def find_touch_device(self):
         devices = [InputDevice(path) for path in list_devices()]
@@ -170,25 +205,26 @@ class RTSPViewer:
                 if not ret:
                     break
 
-                # 1. Color convert and Resize efficiently
-                img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_NEAREST)
+                # 1. Color convert small and then Resize (MUCH FASTER)
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img_rgb = cv2.resize(
+                    img_rgb, (self.w, self.h), interpolation=cv2.INTER_NEAREST
+                )
 
-                # 2. Fast NumPy Blending of UI
-                # out = img * (1 - mask) + overlay * mask
-                # Using OpenCV for even faster blending if possible, or just numpy
-                img_rgb = (
-                    img_rgb * (1.0 - self.ui_mask) + self.ui_overlay * self.ui_mask
-                ).astype(np.uint8)
+                # 2. Fast Targeted Blending of UI
+                for reg in self.ui_regions:
+                    roi = img_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]]
+                    # Blend ROI
+                    blended = (
+                        roi * (1.0 - reg["mask"]) + reg["rgb"] * reg["mask"]
+                    ).astype(np.uint8)
+                    img_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]] = blended
 
-                # 3. Handle different BPP (RGB565 or RGB888/32)
+                # 3. Handle different BPP (RGB565 or RGB888/32) efficiently
                 if self.bpp == 32:
-                    # BGRX or RGBX format
-                    out = np.zeros((self.h, self.w, 4), dtype=np.uint8)
-                    out[:, :, :3] = img_rgb
-                    self.frame = out.tobytes()
+                    self.out_buffer[:, :, :3] = img_rgb
+                    self.frame = self.out_buffer.tobytes()
                 elif self.bpp == 16:
-                    # RGB565
                     r = (img_rgb[:, :, 0] >> 3).astype(np.uint16)
                     g = (img_rgb[:, :, 1] >> 2).astype(np.uint16)
                     b = (img_rgb[:, :, 2] >> 3).astype(np.uint16)
