@@ -23,12 +23,37 @@ Y_RAW_MIN, Y_RAW_MAX = 300, 3950
 
 
 class RTSPViewer:
+    def _set_cursor(self, visible):
+        """Try multiple ways to hide/show the console cursor."""
+        try:
+            # 1. ANSI Escape sequences
+            if visible:
+                sys.stdout.write("\033[?25h")
+            else:
+                sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
+
+            # 2. Linux framebuffer console cursor blink
+            # This is often the cause of the artifact on Pi
+            path = "/sys/class/graphics/fbcon/cursor_blink"
+            if os.path.exists(path):
+                with open(path, "w") as f:
+                    f.write("1" if visible else "0")
+
+            # 3. setterm (requires being in a real tty)
+            if not visible:
+                os.system("setterm -cursor off > /dev/tty1 2>&1")
+            else:
+                os.system("setterm -cursor on > /dev/tty1 2>&1")
+        except:
+            pass
+
     def __init__(self):
         print("Initializing RTSP Viewer (Direct Framebuffer)...")
 
-        # Hide terminal cursor
-        sys.stdout.write("\033[?25l")
-        sys.stdout.flush()
+        # Hide terminal cursor and disable blanking
+        self._set_cursor(False)
+        os.system("setterm -blank 0 > /dev/tty1 2>&1")
 
         # 1. Initialize Framebuffer
         try:
@@ -302,8 +327,7 @@ class RTSPViewer:
             self.running = False
         finally:
             # Restore terminal cursor
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
+            self._set_cursor(True)
             if hasattr(self, "fb_map"):
                 self.fb_map.close()
             sys.exit(0)
