@@ -26,25 +26,38 @@ class RTSPViewer:
     def _set_cursor(self, visible):
         """Try multiple ways to hide/show the console cursor."""
         try:
-            # 1. ANSI Escape sequences
-            if visible:
-                sys.stdout.write("\033[?25h")
-            else:
-                sys.stdout.write("\033[?25l")
+            # 1. ANSI Escape sequences for current stdout
+            sys.stdout.write("\033[?25h" if visible else "\033[?25l")
             sys.stdout.flush()
 
-            # 2. Linux framebuffer console cursor blink
-            # This is often the cause of the artifact on Pi
-            path = "/sys/class/graphics/fbcon/cursor_blink"
-            if os.path.exists(path):
-                with open(path, "w") as f:
-                    f.write("1" if visible else "0")
+            # 2. Target all potential consoles (Pi uses tty0 or tty1 for FB)
+            val = "on" if visible else "off"
+            ttys = ["/dev/tty0", "/dev/tty1", "/dev/console"]
+            try:
+                curr = os.popen("tty").read().strip()
+                if curr and curr not in ttys:
+                    ttys.append(curr)
+            except:
+                pass
 
-            # 3. setterm (requires being in a real tty)
-            if not visible:
-                os.system("setterm -cursor off > /dev/tty1 2>&1")
-            else:
-                os.system("setterm -cursor on > /dev/tty1 2>&1")
+            for tty in ttys:
+                if os.path.exists(tty):
+                    os.system(f"setterm -cursor {val} > {tty} 2>&1")
+                    # Also send raw ANSI escape directly to the device
+                    esc = "\033[?25h" if visible else "\033[?25l"
+                    os.system(f"echo -ne '{esc}' > {tty} 2>&1")
+                    if not visible:
+                        # Move cursor off-screen and disable blanking
+                        os.system(f"setterm -blank 0 -powersave off > {tty} 2>&1")
+                        os.system(f"echo -ne '\033[999;999H' > {tty} 2>&1")
+
+            # 3. Linux kernel-level cursor blink disable
+            for path in [
+                "/sys/class/graphics/fbcon/cursor_blink",
+                "/sys/devices/virtual/graphics/fbcon/cursor_blink",
+            ]:
+                if os.path.exists(path):
+                    os.system(f"echo {1 if visible else 0} > {path} 2>/dev/null")
         except:
             pass
 
@@ -53,7 +66,7 @@ class RTSPViewer:
 
         # Hide terminal cursor and disable blanking
         self._set_cursor(False)
-        os.system("setterm -blank 0 > /dev/tty1 2>&1")
+        time.sleep(0.1)
 
         # 1. Initialize Framebuffer
         try:
@@ -305,6 +318,9 @@ class RTSPViewer:
     def start(self):
         threading.Thread(target=self.video_worker, daemon=True).start()
         threading.Thread(target=self.touch_worker, daemon=True).start()
+
+        # Final attempt to hide cursor before loop
+        self._set_cursor(False)
 
         try:
             while self.running:
