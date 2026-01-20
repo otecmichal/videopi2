@@ -103,13 +103,14 @@ class RTSPViewer:
             temp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             try:
                 bbox = temp_draw.textbbox((0, 0), text, font=font)
-                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                tw, th = int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
             except AttributeError:
+                # Fallback for older Pillow versions
                 tw, th = temp_draw.textsize(text, font=font)
 
             x, y = pos_func(tw, th)
             # Create the actual region
-            img = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
+            img = Image.new("RGBA", (int(tw) + 4, int(th) + 4), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
             # Shadow
             draw.text((2, 2), text, font=font, fill=(0, 0, 0, 255))
@@ -238,20 +239,19 @@ class RTSPViewer:
                         blended
                     )
 
-                # 3. Handle different BPP efficiently without tobytes()
+                # 3. Handle different BPP efficiently
                 if self.bpp == 32:
-                    # RGB -> RGBA expansion is faster via cvtColor than numpy slicing
+                    # RGB -> RGBA expansion
                     cv2.cvtColor(self.full_rgb, cv2.COLOR_RGB2RGBA, dst=self.out_buffer)
-                    self.frame = self.out_buffer
+                    self.frame = self.out_buffer.tobytes()
                 elif self.bpp == 16:
+                    # RGB565 conversion
                     r = (self.full_rgb[:, :, 0] >> 3).astype(np.uint16)
                     g = (self.full_rgb[:, :, 1] >> 2).astype(np.uint16)
                     b = (self.full_rgb[:, :, 2] >> 3).astype(np.uint16)
-                    self.frame = (
-                        (r << 11) | (g << 5) | b
-                    )  # Still need tobytes eventually or write directly
+                    self.frame = ((r << 11) | (g << 5) | b).astype(np.uint16).tobytes()
                 else:
-                    self.frame = self.full_rgb
+                    self.frame = self.full_rgb.tobytes()
 
             cap.release()
             time.sleep(1)
@@ -288,13 +288,17 @@ class RTSPViewer:
                     self.current_idx = (self.current_idx + 1) % len(self.cameras)
                     self.last_interaction_time = time.time()
 
-                if self.frame:
+                if self.frame is not None:
                     self.fb_map.seek(0)
                     self.fb_map.write(self.frame)
                     self.frame = None
 
                 time.sleep(max(0, FRAME_TIME - (time.time() - start_loop)))
-        except:
+        except Exception as e:
+            print(f"Main loop error: {e}")
+            import traceback
+
+            traceback.print_exc()
             self.running = False
         finally:
             # Restore terminal cursor

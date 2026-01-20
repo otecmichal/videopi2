@@ -4,7 +4,8 @@ import time
 import threading
 import os
 import sys
-import numpy as np
+
+# import numpy as np
 import pygame
 from evdev import InputDevice, list_devices, ecodes
 
@@ -230,7 +231,7 @@ class RTSPViewer:
                     self.current_idx = (self.current_idx + 1) % len(self.cameras)
                     self.last_interaction_time = time.time()
 
-                if self.frame:
+                if self.frame is not None:
                     self.screen.blit(self.frame, (0, 0))
                     self.frame = None  # Signal ready for next frame
 
