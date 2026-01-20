@@ -28,7 +28,11 @@ class RTSPViewer:
         """Try multiple ways to hide/show the console cursor without artifacts."""
         try:
             # 1. ANSI Escape sequences for current stdout
-            sys.stdout.write("\033[?25h" if visible else "\033[?25l")
+            # ?25l is standard, ?1c is Linux console specific
+            if visible:
+                sys.stdout.write("\033[?25h\033[?0c")
+            else:
+                sys.stdout.write("\033[?25l\033[?1c")
             sys.stdout.flush()
 
             # 2. Target consoles
@@ -37,20 +41,26 @@ class RTSPViewer:
 
             for tty in ttys:
                 if os.path.exists(tty):
-                    # Use subprocess for cleaner execution and hide errors for setterm
                     # TERM=linux is crucial for setterm to work via SSH
                     subprocess.run(
                         f"TERM=linux setterm -cursor {val} > {tty}",
                         shell=True,
                         stderr=subprocess.DEVNULL,
                     )
-                    # Use /bin/echo to ensure -ne works as expected
-                    esc = "\\033[?25h" if visible else "\\033[?25l"
-                    subprocess.run(
-                        f"/bin/echo -ne '{esc}' > {tty}",
-                        shell=True,
-                        stderr=subprocess.DEVNULL,
-                    )
+
+                    # Direct escape sequences to the tty device
+                    if not visible:
+                        # ?25l: hide, ?1c: hide Linux cursor, ?17;0;0c: set cursor to "nothing"
+                        esc_codes = ["\\033[?25l", "\\033[?1c", "\\033[?17;0;0c"]
+                    else:
+                        esc_codes = ["\\033[?25h", "\\033[?0c"]
+
+                    for esc in esc_codes:
+                        subprocess.run(
+                            f"/bin/echo -ne '{esc}' > {tty}",
+                            shell=True,
+                            stderr=subprocess.DEVNULL,
+                        )
 
                     if not visible:
                         subprocess.run(
@@ -58,14 +68,8 @@ class RTSPViewer:
                             shell=True,
                             stderr=subprocess.DEVNULL,
                         )
-                        subprocess.run(
-                            f"/bin/echo -ne '\\033[999;999H' > {tty}",
-                            shell=True,
-                            stderr=subprocess.DEVNULL,
-                        )
 
             # 3. Kernel level cursor blink disable
-            # We don't use sudo here to avoid asking for password, just try if we have perms
             for path in [
                 "/sys/class/graphics/fbcon/cursor_blink",
                 "/sys/devices/virtual/graphics/fbcon/cursor_blink",
@@ -82,19 +86,33 @@ class RTSPViewer:
     def __init__(self):
         print("Initializing RTSP Viewer (Direct Framebuffer)...")
 
+        # 1. Permission Check & Warning
+        try:
+            fb_path = "/dev/fb0"
+            if not os.access(fb_path, os.W_OK) or os.getuid() != 0:
+                print("\n" + "!" * 60)
+                print("PERMISSION & CURSOR WARNING:")
+                print(
+                    "To hide the blinking cursor and access the framebuffer without sudo,"
+                )
+                print("your user must be in the 'video', 'tty', and 'input' groups.")
+                print(
+                    f"\nRun: sudo usermod -aG video,tty,input {os.environ.get('USER', 'your_user')}"
+                )
+                print("Then LOG OUT and LOG BACK IN for changes to take effect.")
+                print("!" * 60 + "\n")
+        except:
+            pass
+
         # Hide terminal cursor and disable blanking
         self._set_cursor(False)
         time.sleep(0.1)
 
-        # 1. Initialize Framebuffer
+        # 2. Initialize Framebuffer
         try:
             fb_path = "/dev/fb0"
-            if not os.access(fb_path, os.W_OK):
-                print(
-                    f"Warning: No write access to {fb_path}. Try: sudo usermod -aG video $USER"
-                )
-
             fb = open(fb_path, "r+b")
+
             # We assume standard 1080p or 720p. For Pi, usually it's fixed at boot.
             # We'll try to get resolution from sysfs if possible, or fallback to common.
             self.w, self.h = self._get_fb_res()
