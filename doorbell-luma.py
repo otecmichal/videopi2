@@ -7,6 +7,7 @@ import sys
 import numpy as np
 import mmap
 import subprocess
+import fcntl
 from PIL import Image, ImageDraw, ImageFont
 from evdev import InputDevice, list_devices, ecodes
 
@@ -28,43 +29,50 @@ class RTSPViewer:
         """Try multiple ways to hide/show the console cursor without artifacts."""
         try:
             # 1. ANSI Escape sequences for current stdout
-            # ?25l is standard, ?1c is Linux console specific
             if visible:
                 sys.stdout.write("\033[?25h\033[?0c")
             else:
                 sys.stdout.write("\033[?25l\033[?1c")
             sys.stdout.flush()
 
-            # 2. Target consoles
+            # 2. Target consoles with ioctl and setterm
             val = "on" if visible else "off"
             ttys = ["/dev/tty0", "/dev/tty1", "/dev/console"]
 
+            # KD_GRAPHICS = 0x01, KD_TEXT = 0x00, KDSETMODE = 0x4B3A
+            mode = 0x00 if visible else 0x01
+
             for tty in ttys:
                 if os.path.exists(tty):
-                    # TERM=linux is crucial for setterm to work via SSH
+                    try:
+                        # Tell the console it's in graphics mode (hides cursor/text)
+                        # This is what professional framebuffer apps (like Pygame) do
+                        with open(tty, "w") as f:
+                            fcntl.ioctl(f.fileno(), 0x4B3A, mode)
+                    except:
+                        pass
+
                     subprocess.run(
                         f"TERM=linux setterm -cursor {val} > {tty}",
                         shell=True,
                         stderr=subprocess.DEVNULL,
                     )
 
-                    # Direct escape sequences to the tty device
                     if not visible:
-                        # ?25l: hide, ?1c: hide Linux cursor, ?17;0;0c: set cursor to "nothing"
-                        esc_codes = ["\\033[?25l", "\\033[?1c", "\\033[?17;0;0c"]
-                    else:
-                        esc_codes = ["\\033[?25h", "\\033[?0c"]
-
-                    for esc in esc_codes:
+                        # Direct hide and move to top-left
                         subprocess.run(
-                            f"/bin/echo -ne '{esc}' > {tty}",
+                            f"/bin/echo -ne '\\033[?25l\\033[?1c\\033[H' > {tty}",
                             shell=True,
                             stderr=subprocess.DEVNULL,
                         )
-
-                    if not visible:
                         subprocess.run(
                             f"TERM=linux setterm -blank 0 -powersave off > {tty}",
+                            shell=True,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    else:
+                        subprocess.run(
+                            f"/bin/echo -ne '\\033[?25h\\033[?0c' > {tty}",
                             shell=True,
                             stderr=subprocess.DEVNULL,
                         )
@@ -86,23 +94,17 @@ class RTSPViewer:
     def __init__(self):
         print("Initializing RTSP Viewer (Direct Framebuffer)...")
 
-        # 1. Permission Check & Warning
-        try:
-            fb_path = "/dev/fb0"
-            if not os.access(fb_path, os.W_OK) or os.getuid() != 0:
-                print("\n" + "!" * 60)
-                print("PERMISSION & CURSOR WARNING:")
-                print(
-                    "To hide the blinking cursor and access the framebuffer without sudo,"
-                )
-                print("your user must be in the 'video', 'tty', and 'input' groups.")
-                print(
-                    f"\nRun: sudo usermod -aG video,tty,input {os.environ.get('USER', 'your_user')}"
-                )
-                print("Then LOG OUT and LOG BACK IN for changes to take effect.")
-                print("!" * 60 + "\n")
-        except:
-            pass
+        # 1. Quick Permission Check
+        fb_path = "/dev/fb0"
+        if not os.access(fb_path, os.W_OK):
+            print("\n" + "!" * 60)
+            print("ERROR: No write access to framebuffer.")
+            print(
+                f"Run: sudo usermod -aG video,tty,input {os.environ.get('USER', 'your_user')}"
+            )
+            print("Then LOG OUT and LOG BACK IN.")
+            print("!" * 60 + "\n")
+            sys.exit(1)
 
         # Hide terminal cursor and disable blanking
         self._set_cursor(False)
@@ -110,7 +112,6 @@ class RTSPViewer:
 
         # 2. Initialize Framebuffer
         try:
-            fb_path = "/dev/fb0"
             fb = open(fb_path, "r+b")
 
             # We assume standard 1080p or 720p. For Pi, usually it's fixed at boot.
@@ -387,8 +388,12 @@ class RTSPViewer:
             # Restore terminal cursor
             self._set_cursor(True)
             if hasattr(self, "fb_map"):
-                self.fb_map.close()
-            sys.exit(0)
+                try:
+                    self.fb_map.close()
+                except:
+                    pass
+            # Use os._exit to prevent "terminate called" errors from background threads
+            os._exit(0)
 
 
 if __name__ == "__main__":
