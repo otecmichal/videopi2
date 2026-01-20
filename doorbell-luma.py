@@ -26,6 +26,10 @@ class RTSPViewer:
     def __init__(self):
         print("Initializing RTSP Viewer (Direct Framebuffer)...")
 
+        # Hide terminal cursor
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
         # 1. Initialize Framebuffer
         try:
             fb = open("/dev/fb0", "r+b")
@@ -236,7 +240,11 @@ class RTSPViewer:
         except:
             self.running = False
         finally:
-            self.fb_map.close()
+            # Restore terminal cursor
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+            if hasattr(self, "fb_map"):
+                self.fb_map.close()
             sys.exit(0)
 
 
