@@ -6,6 +6,7 @@ import os
 import sys
 import numpy as np
 import mmap
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 from evdev import InputDevice, list_devices, ecodes
 
@@ -24,40 +25,57 @@ Y_RAW_MIN, Y_RAW_MAX = 300, 3950
 
 class RTSPViewer:
     def _set_cursor(self, visible):
-        """Try multiple ways to hide/show the console cursor."""
+        """Try multiple ways to hide/show the console cursor without artifacts."""
         try:
             # 1. ANSI Escape sequences for current stdout
             sys.stdout.write("\033[?25h" if visible else "\033[?25l")
             sys.stdout.flush()
 
-            # 2. Target all potential consoles (Pi uses tty0 or tty1 for FB)
+            # 2. Target consoles
             val = "on" if visible else "off"
             ttys = ["/dev/tty0", "/dev/tty1", "/dev/console"]
-            try:
-                curr = os.popen("tty").read().strip()
-                if curr and curr not in ttys:
-                    ttys.append(curr)
-            except:
-                pass
 
             for tty in ttys:
                 if os.path.exists(tty):
-                    os.system(f"setterm -cursor {val} > {tty} 2>&1")
-                    # Also send raw ANSI escape directly to the device
-                    esc = "\033[?25h" if visible else "\033[?25l"
-                    os.system(f"echo -ne '{esc}' > {tty} 2>&1")
-                    if not visible:
-                        # Move cursor off-screen and disable blanking
-                        os.system(f"setterm -blank 0 -powersave off > {tty} 2>&1")
-                        os.system(f"echo -ne '\033[999;999H' > {tty} 2>&1")
+                    # Use subprocess for cleaner execution and hide errors for setterm
+                    # TERM=linux is crucial for setterm to work via SSH
+                    subprocess.run(
+                        f"TERM=linux setterm -cursor {val} > {tty}",
+                        shell=True,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    # Use /bin/echo to ensure -ne works as expected
+                    esc = "\\033[?25h" if visible else "\\033[?25l"
+                    subprocess.run(
+                        f"/bin/echo -ne '{esc}' > {tty}",
+                        shell=True,
+                        stderr=subprocess.DEVNULL,
+                    )
 
-            # 3. Linux kernel-level cursor blink disable
+                    if not visible:
+                        subprocess.run(
+                            f"TERM=linux setterm -blank 0 -powersave off > {tty}",
+                            shell=True,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        subprocess.run(
+                            f"/bin/echo -ne '\\033[999;999H' > {tty}",
+                            shell=True,
+                            stderr=subprocess.DEVNULL,
+                        )
+
+            # 3. Kernel level cursor blink disable
+            # We don't use sudo here to avoid asking for password, just try if we have perms
             for path in [
                 "/sys/class/graphics/fbcon/cursor_blink",
                 "/sys/devices/virtual/graphics/fbcon/cursor_blink",
             ]:
                 if os.path.exists(path):
-                    os.system(f"echo {1 if visible else 0} > {path} 2>/dev/null")
+                    subprocess.run(
+                        f"echo {1 if visible else 0} > {path}",
+                        shell=True,
+                        stderr=subprocess.DEVNULL,
+                    )
         except:
             pass
 
@@ -70,7 +88,13 @@ class RTSPViewer:
 
         # 1. Initialize Framebuffer
         try:
-            fb = open("/dev/fb0", "r+b")
+            fb_path = "/dev/fb0"
+            if not os.access(fb_path, os.W_OK):
+                print(
+                    f"Warning: No write access to {fb_path}. Try: sudo usermod -aG video $USER"
+                )
+
+            fb = open(fb_path, "r+b")
             # We assume standard 1080p or 720p. For Pi, usually it's fixed at boot.
             # We'll try to get resolution from sysfs if possible, or fallback to common.
             self.w, self.h = self._get_fb_res()
