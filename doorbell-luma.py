@@ -67,10 +67,12 @@ class RTSPViewer:
         self.ui_overlay = None
         self.ui_regions = []  # List of (y1, y2, x1, x2, overlay_rgb, mask)
 
-        # Pre-allocate output buffer to avoid per-frame allocation
+        # Pre-allocate buffers to avoid per-frame allocation
         self.out_buffer = np.zeros(
             (self.h, self.w, 4 if self.bpp == 32 else 3), dtype=np.uint8
         )
+        self.full_rgb = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        self.small_rgb = None  # Will be allocated on first frame
 
         self._update_ui_assets()
 
@@ -205,32 +207,51 @@ class RTSPViewer:
                 if not ret:
                     break
 
-                # 1. Color convert small and then Resize (MUCH FASTER)
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img_rgb = cv2.resize(
-                    img_rgb, (self.w, self.h), interpolation=cv2.INTER_NEAREST
+                # 1. Color convert small and Resize using pre-allocated buffers
+                if self.small_rgb is None or self.small_rgb.shape[:2] != img.shape[:2]:
+                    self.small_rgb = np.zeros(
+                        (img.shape[0], img.shape[1], 3), dtype=np.uint8
+                    )
+
+                cv2.cvtColor(img, cv2.COLOR_BGR2RGB, dst=self.small_rgb)
+                cv2.resize(
+                    self.small_rgb,
+                    (self.w, self.h),
+                    dst=self.full_rgb,
+                    interpolation=cv2.INTER_NEAREST,
                 )
 
-                # 2. Fast Targeted Blending of UI
+                # 2. Fast Targeted Blending of UI (Integer math)
                 for reg in self.ui_regions:
-                    roi = img_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]]
-                    # Blend ROI
+                    roi = self.full_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]]
+                    # Integer blending: (src * (255-alpha) + overlay * alpha) >> 8
+                    # We use uint16 for intermediate to avoid overflow
+                    alpha = (reg["mask"] * 255).astype(np.uint16)
                     blended = (
-                        roi * (1.0 - reg["mask"]) + reg["rgb"] * reg["mask"]
+                        (
+                            roi.astype(np.uint16) * (255 - alpha)
+                            + reg["rgb"].astype(np.uint16) * alpha
+                        )
+                        >> 8
                     ).astype(np.uint8)
-                    img_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]] = blended
+                    self.full_rgb[reg["y1"] : reg["y2"], reg["x1"] : reg["x2"]] = (
+                        blended
+                    )
 
-                # 3. Handle different BPP (RGB565 or RGB888/32) efficiently
+                # 3. Handle different BPP efficiently without tobytes()
                 if self.bpp == 32:
-                    self.out_buffer[:, :, :3] = img_rgb
-                    self.frame = self.out_buffer.tobytes()
+                    # RGB -> RGBA expansion is faster via cvtColor than numpy slicing
+                    cv2.cvtColor(self.full_rgb, cv2.COLOR_RGB2RGBA, dst=self.out_buffer)
+                    self.frame = self.out_buffer
                 elif self.bpp == 16:
-                    r = (img_rgb[:, :, 0] >> 3).astype(np.uint16)
-                    g = (img_rgb[:, :, 1] >> 2).astype(np.uint16)
-                    b = (img_rgb[:, :, 2] >> 3).astype(np.uint16)
-                    self.frame = ((r << 11) | (g << 5) | b).tobytes()
+                    r = (self.full_rgb[:, :, 0] >> 3).astype(np.uint16)
+                    g = (self.full_rgb[:, :, 1] >> 2).astype(np.uint16)
+                    b = (self.full_rgb[:, :, 2] >> 3).astype(np.uint16)
+                    self.frame = (
+                        (r << 11) | (g << 5) | b
+                    )  # Still need tobytes eventually or write directly
                 else:
-                    self.frame = img_rgb.tobytes()
+                    self.frame = self.full_rgb
 
             cap.release()
             time.sleep(1)
