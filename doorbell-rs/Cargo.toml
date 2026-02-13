@@ -1,0 +1,33 @@
+[package]
+name = "doorbell-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# GStreamer Integration
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+
+# System/Hardware
+anyhow = "1.0"
+evdev = "0.12"
+memmap2 = "0.5"
+libc = "0.2"
+ctrlc = "3.4"
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UI / Graphics
+embedded-graphics = "0.8"
+embedded-graphics-core = "0.4"
+# Using a simple font for now
+profont = "0.7" 
+
+# For Framebuffer interaction (we might need a raw approach or a helper crate)
+# We will use memmap2 to access /dev/fb0 directly due to lack of maintained FB crates.
+
+[features]
+default = []

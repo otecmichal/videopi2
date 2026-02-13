@@ -1,0 +1,28 @@
+[
+    {
+        "name": "Garaz",
+	"url": "rtsp://videopi:pifeed23@192.168.77.204:554/Streaming/Channels/102",
+        "comment": "Garaz"
+    },
+    {
+        "name": "Dvere",
+        "url": "rtsp://videopi:pifeed23@192.168.77.207:554/Streaming/Channels/102",
+        "comment": "Another example feed."
+    },
+    {
+        "name": "Pivnica",
+        "url": "rtsp://videopi:pifeed23@192.168.77.203:554/Streaming/Channels/102",
+        "comment": "pivnica"
+    },
+    {
+        "name": "Vzadu",
+        "url": "rtsp://videopi:pifeed23@192.168.77.205:554/Streaming/Channels/102",
+        "comment": "Another example feed."
+    },
+    {
+        "name": "Terasa",
+        "url": "rtsp://videopi:pifeed23@192.168.77.206:554/Streaming/Channels/102",
+        "comment": "Another example feed."
+    }
+]
+
